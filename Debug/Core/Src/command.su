@@ -1,0 +1,5 @@
+../Core/Src/command.c:10:6:command_Init	24	static
+../Core/Src/command.c:22:9:position_Move	24	static
+../Core/Src/command.c:28:9:position_Speed_Move	24	static
+../Core/Src/command.c:48:9:update_Command_Position	24	static
+../Core/Src/command.c:64:6:command_Reset	16	static
