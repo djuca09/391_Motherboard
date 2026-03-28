@@ -115,6 +115,7 @@ int main(void)
 
   uint16_t jogSpeed = 30;
   uint8_t jogMode = 0;
+  uint8_t readEnc = 0;
 
   static GPIO_PinState lastState = GPIO_PIN_SET;
 
@@ -127,11 +128,13 @@ int main(void)
   while (1)
   {
 
-/*
-	  encoder_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
-	  sprintf(msg, "enc: %ld\r\n", encoder_count);
-	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
-*/
+
+	  if(readEnc){
+		  encoder_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
+		  sprintf(msg, "enc: %ld\r\n", encoder_count);
+		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	  }
+
 
 
 	  GPIO_PinState current = HAL_GPIO_ReadPin(LMT_SGNL_GPIO_Port, LMT_SGNL_Pin);
@@ -166,6 +169,8 @@ int main(void)
 	              Motor_Stop();
 	          else if (rxBuf[0] == 'd')
 	        	  jogSpeed = (uint16_t)atoi(&rxBuf[1]);
+	          else if (rxBuf[0] == 'e')
+	          	  readEnc = !readEnc;
 	      }
 	  }else{
 		  if (rxReady)
