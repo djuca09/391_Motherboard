@@ -48,6 +48,8 @@
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim6;
+TIM_HandleTypeDef htim7;
 
 /* USER CODE BEGIN PV */
 
@@ -58,20 +60,64 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_TIM6_Init(void);
+static void MX_TIM7_Init(void);
 /* USER CODE BEGIN PFP */
 void Motor_Stop(void);
 void Motor_Forward(uint16_t duty);
 void Motor_Reverse(uint16_t duty);
+void Motor_Brake(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+PID_t pid1;
+Command_t command1;
+volatile int32_t commandpos = 0;
+volatile int32_t actualpos = 0;
 volatile int32_t encoder_count = 0;
+volatile int32_t prev_count = 0;
+volatile int32_t diff = 0;
+volatile float duty = 0.0f;
 
 uint8_t rxReady = 0;
 char rxBuf[32];
-uint8_t rxIdx = 0;
-uint8_t rxComplete = 0;
+
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM6)
+    {
+        encoder_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
+        diff = encoder_count - prev_count;
+
+        // Handle overflow
+        if (diff > 32767)
+            diff -= 65536;
+        else if (diff < -32767)
+            diff += 65536;
+
+        prev_count = encoder_count;
+        actualpos += diff;
+
+        commandpos = update_Command_Position(&command1);
+        duty = PID_Update(&pid1, commandpos, actualpos);
+
+        encoder_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
+        diff = encoder_count - prev_count;
+
+
+
+        if (duty > 0)
+            Motor_Forward((uint16_t)duty);
+        else if (duty < 0)
+            Motor_Reverse((uint16_t)(-duty));
+        else
+            Motor_Stop();
+    }
+}
+
 
 /* USER CODE END 0 */
 
@@ -107,19 +153,41 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM4_Init();
   MX_USB_DEVICE_Init();
+  MX_TIM6_Init();
+  MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2); // M5
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1); // M6
   HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); // Encoder
 
-  uint16_t jogSpeed = 30;
+
+
+  float kp = 3.5f;
+  float ki = 15.0f;
+  float kd = 0.1f;
+  float ts = 0.001f;
+  float td = 1.0f;
+  float umax = 999.0f;
+  float umin = -999.0f;
+  float ktj = (2800.0f/80.0f);
+  float vmax = 600.0f; // mm/s DONT FORGET TO CHANGE WHEN CHANGING KTJ
+
+
+  uint8_t runPID = 0;
+  float target = 0;
+  uint16_t jogSpeed = 300;
   uint8_t jogMode = 0;
   uint8_t readEnc = 0;
+  uint8_t pidOut = 0;
+
+  PID_Init(&pid1,kp,ki,kd,ts,td,umax,umin);
+  command_Init(&command1,ktj,vmax,ts);
+
 
   static GPIO_PinState lastState = GPIO_PIN_SET;
 
-  char msg[32];
+  char msg[64];
 
   /* USER CODE END 2 */
 
@@ -129,16 +197,36 @@ int main(void)
   {
 
 
-	  if(readEnc){
-		  encoder_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
-		  sprintf(msg, "enc: %ld\r\n", encoder_count);
-		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
-	  }
-
-
-
 	  GPIO_PinState current = HAL_GPIO_ReadPin(LMT_SGNL_GPIO_Port, LMT_SGNL_Pin);
 
+
+	  if (lastState == GPIO_PIN_SET && current == GPIO_PIN_RESET)
+	  {
+	      if (!runPID) {
+	          // Home and enable interrupt
+	    	  Motor_Stop(); //Psuedo Safety Stop
+	          actualpos = 0;
+	          PID_Reset(&pid1);
+	          command_Reset(&command1);
+	          prev_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
+	          runPID = 1;
+	          jogMode = 0;
+		  	  strcpy(msg, "PID Mode On\r\n");
+		  	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	          HAL_TIM_Base_Start_IT(&htim6);
+	      } else {
+	          // Stop interrupt and motor
+	          HAL_TIM_Base_Stop_IT(&htim6);
+	          Motor_Stop();
+	          runPID = 0;
+		  	  strcpy(msg, "PID Mode Off\r\n");
+		  	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	      }
+	  }
+
+	  lastState = current;
+
+	  /*
 	  if (lastState == GPIO_PIN_SET && current == GPIO_PIN_RESET)
 	  {
 	      jogMode = !jogMode;
@@ -150,47 +238,111 @@ int main(void)
 	    	  strcpy(msg, "Jog Mode On\r\n");
 	    	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
 	      }
-	  }
+	  } */
 
-	  HAL_Delay(100);
-
-	  lastState = current;
-
-	  if (jogMode)
+	  if (rxReady)
 	  {
-	      if (rxReady)
+
+		  rxReady = 0;
+
+		  if (runPID)
+		  {
+		      if (rxBuf[0] == 't' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
+		      {
+		    	  target = atof(&rxBuf[1]);
+		          position_Move(&command1, target, actualpos);
+		      }
+		      else if (rxBuf[0] == 'p' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
+		      {
+		    	  kp = atof(&rxBuf[1]);
+		    	  PID_TuneKp(&pid1, kp);
+		  		  sprintf(msg, "kp: %.2f\r\n", kp);
+		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+		      }
+		      else if (rxBuf[0] == 'i' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
+		      {
+		    	  ki = atof(&rxBuf[1]);
+		    	  PID_TuneKi(&pid1, ki);
+		  		  sprintf(msg, "ki: %.2f\r\n", ki);
+		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+		      }
+		      else if (rxBuf[0] == 'd' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
+		      {
+		    	  kd = atof(&rxBuf[1]);
+		    	  PID_TuneKd(&pid1, kd);
+		  		  sprintf(msg, "kd: %.2f\r\n", kd);
+		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+		      }
+		      else if (rxBuf[0] == 'g')
+		      		      {
+		      		  		  sprintf(msg, "kp: %.4f ki: %.4f kd: %.4f\r\n", kp ,ki ,kd);
+		      		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+		      		      }
+		      else if (rxBuf[0] == 'o')
+		      		      {
+		      		  		  pidOut = !pidOut;
+		      		      }
+		      else{
+				  sprintf(msg, "Input %s not recognized\r\n", rxBuf);
+				  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+			  }
+		  }
+
+		  else if (rxBuf[0] == 'j'){
+			  jogMode = !jogMode;
+			  if (!jogMode){
+				  Motor_Stop();
+			  	  strcpy(msg, "Jog Mode Off\r\n");
+			  	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+			  }else{
+				  Motor_Stop();
+			  	  strcpy(msg, "Jog Mode On\r\n");
+			  	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+			  }
+		  }
+
+		  else if (jogMode)
 	      {
-	          rxReady = 0;
 	          if (rxBuf[0] == 'f')
 	              Motor_Forward(jogSpeed);
 	          else if (rxBuf[0] == 'r')
 	              Motor_Reverse(jogSpeed);
 	          else if (rxBuf[0] == 's')
 	              Motor_Stop();
-	          else if (rxBuf[0] == 'd')
-	        	  jogSpeed = (uint16_t)atoi(&rxBuf[1]);
+	          else if (rxBuf[0] == 'b')
+	              Motor_Brake();
+	          else if (rxBuf[0] == 'd' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
+	          {
+	              jogSpeed = (uint16_t)atoi(&rxBuf[1]);
+	              sprintf(msg, "Jog Speed (Duty): %u\r\n", jogSpeed);
+		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+
+	          }
 	          else if (rxBuf[0] == 'e')
-	          	  readEnc = !readEnc;
-	      }
-	  }else{
-		  if (rxReady)
-		  {
-		      rxReady = 0;
-		      CDC_Transmit_FS((uint8_t*)rxBuf, strlen(rxBuf));
+	          		      	  readEnc = !readEnc;
+	          else
+                  CDC_Transmit_FS((uint8_t*)"Invalid Input\r\n", 15);
+          }	  else{
+			  sprintf(msg, "Input %s not recognized\r\n", rxBuf);
+			  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
 		  }
 	  }
 
+	  if (runPID && pidOut) {
+	      sprintf(msg, "err=%ld duty=%.2f trgt=%.2f act=%ld P=%.2f I=%.2f D=%.2f\r\n",
+	              (long)(commandpos-actualpos), duty, target, (long)actualpos,
+	              pid1.P, pid1.I, pid1.D);
+	      CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	  }
 
-	  /*
-	  Motor_Forward(jogSpeed);
-	  HAL_Delay(pause_ms);
-	  Motor_Stop();
-	  HAL_Delay(pause_ms);
-	  Motor_Reverse(jogSpeed);
-	  HAL_Delay(pause_ms);
-	  Motor_Stop();
-	  HAL_Delay(pause_ms);
-	  */
+	  if(jogMode && readEnc){
+	  		  encoder_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
+	  		  sprintf(msg, "enc: %ld\r\n", encoder_count);
+	  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	  	  }
+
+
+	  HAL_Delay(100);
 
     /* USER CODE END WHILE */
 
@@ -267,7 +419,7 @@ static void MX_TIM3_Init(void)
   htim3.Instance = TIM3;
   htim3.Init.Prescaler = 71;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 99;
+  htim3.Init.Period = 999;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
@@ -358,6 +510,82 @@ static void MX_TIM4_Init(void)
 }
 
 /**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 71;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 999;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
+  * @brief TIM7 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM7_Init(void)
+{
+
+  /* USER CODE BEGIN TIM7_Init 0 */
+
+  /* USER CODE END TIM7_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM7_Init 1 */
+
+  /* USER CODE END TIM7_Init 1 */
+  htim7.Instance = TIM7;
+  htim7.Init.Prescaler = 71;
+  htim7.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim7.Init.Period = 999;
+  htim7.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim7) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim7, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM7_Init 2 */
+
+  /* USER CODE END TIM7_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -431,7 +659,7 @@ void Motor_Stop(void)
 
 void Motor_Forward(uint16_t duty)
 {
-	if (duty > 99) duty = 99;
+	if (duty > 999) duty = 999;
 
     HAL_GPIO_WritePin(GPIOA, MTR_GPO_M7_Pin, GPIO_PIN_SET);   // ON
     HAL_GPIO_WritePin(GPIOA, MTR_GPO_M8_Pin, GPIO_PIN_RESET);   // OFF
@@ -441,13 +669,25 @@ void Motor_Forward(uint16_t duty)
 
 void Motor_Reverse(uint16_t duty)
 {
-    if (duty > 99) duty = 99;
+    if (duty > 999) duty = 999;
 
     HAL_GPIO_WritePin(GPIOA, MTR_GPO_M7_Pin, GPIO_PIN_RESET);   // OFF
     HAL_GPIO_WritePin(GPIOA, MTR_GPO_M8_Pin, GPIO_PIN_SET);   // ON
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, duty);  // M5 PWM
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0);  // M6 OFF
 
+}
+
+void Motor_Brake(void)
+{
+    // Turn off both PMOS
+    HAL_GPIO_WritePin(GPIOA, MTR_GPO_M7_Pin, GPIO_PIN_RESET);   // OFF
+    HAL_GPIO_WritePin(GPIOA, MTR_GPO_M8_Pin, GPIO_PIN_RESET);   // OFF
+
+
+    // Disable both low-side PWMs
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 999);     // M5
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 999);     // M6
 }
 /* USER CODE END 4 */
 
