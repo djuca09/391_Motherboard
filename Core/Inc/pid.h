@@ -29,5 +29,6 @@ float PID_Update(PID_t *pid, int32_t cmd_pos, int32_t act_pos);
 void PID_TuneKi(PID_t *pid, float Ki);
 void PID_TuneKp(PID_t *pid, float Kp);
 void PID_TuneKd(PID_t *pid, float Kd);
+void PID_ResetI(PID_t *pid);
 
 #endif /* INC_PID_H_ */

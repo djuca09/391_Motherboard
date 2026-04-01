@@ -34,6 +34,10 @@ void PID_Reset(PID_t *pid){
 	pid->Df_prev = 0.0f;
 }
 
+void PID_ResetI(PID_t *pid){
+	pid->I = 0.0f;
+}
+
 float PID_Update(PID_t *pid, int32_t cmd_pos, int32_t act_pos)
 {
     if (pid == 0) return 0.0f;

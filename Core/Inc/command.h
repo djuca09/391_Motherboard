@@ -20,8 +20,8 @@ typedef struct {
 } Command_t;
 
 void command_Init(Command_t *command, float Ktj, float v_max, float Ts);
-int32_t position_Move(Command_t *command, float pos_mm, int32_t actual_pos);
-int32_t position_Speed_Move(Command_t *command, float pos_mm, int32_t actual_pos, float spd);
+void position_Move(Command_t *command, float pos_mm, int32_t actual_pos);
+void position_Speed_Move(Command_t *command, float pos_mm, int32_t actual_pos, float spd);
 int32_t update_Command_Position(Command_t *command);
 void command_Reset(Command_t *command);
 

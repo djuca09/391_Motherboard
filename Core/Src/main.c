@@ -80,8 +80,17 @@ volatile int32_t encoder_count = 0;
 volatile int32_t prev_count = 0;
 volatile int32_t diff = 0;
 volatile float duty = 0.0f;
+volatile uint8_t rxReady = 0;
+volatile uint8_t atPosCounter = 0;
+volatile uint8_t runSequence = 0;
+volatile uint8_t ind = 0;
+uint8_t posTolerance = 35;
+uint8_t atPosFlag = 0;
+uint8_t settleTimeMs = 40;
 
-uint8_t rxReady = 0;
+float targets[5] = {150.0f,125.0f,200.0f,100.0f,0.0f};
+//float targets[7] = {22.0f,44.0f,66.0f,88.0f,110.0f,132.0f,0.0f};
+
 char rxBuf[32];
 
 
@@ -101,20 +110,46 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         prev_count = encoder_count;
         actualpos += diff;
 
+        if (runSequence && atPosFlag){
+            atPosFlag = 0;
+            atPosCounter = 0;
+        	PID_Reset(&pid1);
+        	position_Move(&command1, targets[ind], actualpos);
+        	ind++;
+        	if(ind == 5){
+        		ind = 0;
+        		runSequence = 0;
+        	}
+        }
+
         commandpos = update_Command_Position(&command1);
-        duty = PID_Update(&pid1, commandpos, actualpos);
 
-        encoder_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
-        diff = encoder_count - prev_count;
+        if (commandpos == command1.target_pos && abs(commandpos - actualpos) < posTolerance){
+        	if(!atPosFlag)
+        		atPosCounter += 1;
+        }else{
+        	atPosCounter = 0;
+        	atPosFlag = 0;
+        	HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_RESET);
+        }
 
-
-
-        if (duty > 0)
-            Motor_Forward((uint16_t)duty);
-        else if (duty < 0)
-            Motor_Reverse((uint16_t)(-duty));
-        else
-            Motor_Stop();
+        if (atPosCounter >= settleTimeMs){
+        	if(!atPosFlag){
+        		Motor_Brake();
+        	    //PID_Reset(&pid1);
+        	    HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_SET);
+        	    atPosFlag = 1;
+        	}
+        }
+        if(!atPosFlag){
+            duty = PID_Update(&pid1, commandpos, actualpos);
+        	if (duty > 0)
+        		Motor_Forward((uint16_t)duty);
+        	else if (duty < 0)
+        		Motor_Reverse((uint16_t)(-duty));
+        	else
+        		Motor_Brake();
+        }
     }
 }
 
@@ -163,15 +198,15 @@ int main(void)
 
 
 
-  float kp = 3.5f;
-  float ki = 15.0f;
+  float kp = 4.0f;
+  float ki = 3.0f;
   float kd = 0.1f;
   float ts = 0.001f;
   float td = 1.0f;
   float umax = 999.0f;
   float umin = -999.0f;
   float ktj = (2800.0f/80.0f);
-  float vmax = 600.0f; // mm/s DONT FORGET TO CHANGE WHEN CHANGING KTJ
+  float vmax = 300.0f; // mm/s DONT FORGET TO CHANGE WHEN CHANGING KTJ
 
 
   uint8_t runPID = 0;
@@ -250,7 +285,13 @@ int main(void)
 		      if (rxBuf[0] == 't' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
 		      {
 		    	  target = atof(&rxBuf[1]);
+		    	  PID_Reset(&pid1);
 		          position_Move(&command1, target, actualpos);
+		      }
+		      else if (rxBuf[0] == 'w')
+		      {
+		    	  ind = 0;
+		    	  runSequence = 1;
 		      }
 		      else if (rxBuf[0] == 'p' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
 		      {
@@ -282,6 +323,20 @@ int main(void)
 		      		      {
 		      		  		  pidOut = !pidOut;
 		      		      }
+	          else if (rxBuf[0] == 's' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
+	          {
+	              settleTimeMs = (uint8_t)atoi(&rxBuf[1]);
+	              sprintf(msg, "Settle Time (ms): %u\r\n", settleTimeMs);
+		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+
+	          }
+	          else if (rxBuf[0] == 'x' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
+	          {
+	              posTolerance = (uint8_t)atoi(&rxBuf[1]);
+	              sprintf(msg, "Position Tolerance (encoder counts): %u\r\n", posTolerance);
+		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+
+	          }
 		      else{
 				  sprintf(msg, "Input %s not recognized\r\n", rxBuf);
 				  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
@@ -329,8 +384,8 @@ int main(void)
 	  }
 
 	  if (runPID && pidOut) {
-	      sprintf(msg, "err=%ld duty=%.2f trgt=%.2f act=%ld P=%.2f I=%.2f D=%.2f\r\n",
-	              (long)(commandpos-actualpos), duty, target, (long)actualpos,
+	      sprintf(msg, "err=%ld duty=%.2f trgt=%ld act=%ld P=%.2f I=%.2f D=%.2f\r\n",
+	              (long)(commandpos-actualpos), duty, (long)command1.target_pos, (long)actualpos,
 	              pid1.P, pid1.I, pid1.D);
 	      CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
 	  }

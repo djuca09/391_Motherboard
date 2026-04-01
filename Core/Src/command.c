@@ -19,13 +19,13 @@ void command_Init(Command_t *command, float Ktj, float v_max, float Ts){
 }
 
 
-int32_t position_Move(Command_t *command, float pos_mm, int32_t actual_pos){
+void position_Move(Command_t *command, float pos_mm, int32_t actual_pos){
 
-	return position_Speed_Move(command, pos_mm, actual_pos, command->v_max);
+	position_Speed_Move(command, pos_mm, actual_pos, command->v_max);
 
 }
 
-int32_t position_Speed_Move(Command_t *command, float pos_mm, int32_t actual_pos, float spd){
+void position_Speed_Move(Command_t *command, float pos_mm, int32_t actual_pos, float spd){
 
 	//Limit to max velocity
 	if(spd > command->v_max) spd = command->v_max;
@@ -41,7 +41,6 @@ int32_t position_Speed_Move(Command_t *command, float pos_mm, int32_t actual_pos
 
 	command->cmd_pos = actual_pos;
 
-	return command->target_pos;
 
 }
 
