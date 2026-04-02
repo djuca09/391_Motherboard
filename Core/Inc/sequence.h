@@ -21,4 +21,14 @@ typedef struct {
     uint16_t current_step;
 } Sequence_t;
 
+void sequence_Init(Sequence_t *sequence, uint16_t length);
+
+void step_Init(SequenceStep_t *step, float mm, uint32_t ms);
+
+void addStep(Sequence_t *sequence, float mm, uint32_t ms, uint16_t ind);
+
+void addSteps(Sequence_t *sequence, float *mm, uint32_t *ms, uint16_t len);
+
+uint8_t indexSeq(Sequence_t *sequence);
+
 #endif /* INC_SEQUENCE_H_ */

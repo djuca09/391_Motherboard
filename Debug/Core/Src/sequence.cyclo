@@ -1,1 +1,5 @@
-../Core/Src/sequence.c:9:6:sequence_Init	1
+../Core/Src/sequence.c:10:6:sequence_Init	1
+../Core/Src/sequence.c:18:6:step_Init	1
+../Core/Src/sequence.c:23:6:addStep	1
+../Core/Src/sequence.c:29:6:addSteps	2
+../Core/Src/sequence.c:36:9:indexSeq	2

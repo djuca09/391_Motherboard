@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include "pid.h"
 #include "command.h"
+#include "sequence.h"
 #include "usbd_cdc_if.h"
 /* USER CODE END Includes */
 
@@ -74,6 +75,7 @@ void Motor_Brake(void);
 
 PID_t pid1;
 Command_t command1;
+Sequence_t seq1;
 volatile int32_t commandpos = 0;
 volatile int32_t actualpos = 0;
 volatile int32_t encoder_count = 0;
@@ -83,13 +85,15 @@ volatile float duty = 0.0f;
 volatile uint8_t rxReady = 0;
 volatile uint8_t atPosCounter = 0;
 volatile uint8_t runSequence = 0;
-volatile uint8_t ind = 0;
+volatile uint8_t fireSol = 0;
+volatile uint32_t tickMs = 0;
+volatile uint16_t solDelay = 500;
 uint8_t posTolerance = 35;
 uint8_t atPosFlag = 0;
 uint8_t settleTimeMs = 40;
 
-float targets[5] = {150.0f,125.0f,200.0f,100.0f,0.0f};
-//float targets[7] = {22.0f,44.0f,66.0f,88.0f,110.0f,132.0f,0.0f};
+
+
 
 char rxBuf[32];
 
@@ -114,12 +118,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
             atPosFlag = 0;
             atPosCounter = 0;
         	PID_Reset(&pid1);
-        	position_Move(&command1, targets[ind], actualpos);
-        	ind++;
-        	if(ind == 5){
-        		ind = 0;
-        		runSequence = 0;
-        	}
+//        	position_Move(&command1, targets[ind], actualpos);
+//        	ind++;
+//        	if(ind == 5){
+//        		ind = 0;
+//        		runSequence = 0;
+//        	}
         }
 
         commandpos = update_Command_Position(&command1);
@@ -130,14 +134,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         }else{
         	atPosCounter = 0;
         	atPosFlag = 0;
-        	HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_RESET);
+        	HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_RESET); //LED for Debugging
         }
 
         if (atPosCounter >= settleTimeMs){
         	if(!atPosFlag){
         		Motor_Brake();
         	    //PID_Reset(&pid1);
-        	    HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_SET);
+        	    HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_SET); //LED for Debugging
         	    atPosFlag = 1;
         	}
         }
@@ -151,6 +155,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         		Motor_Brake();
         }
     }
+
+    if (htim->Instance == TIM7)
+        {
+
+            tickMs++;
+            if(fireSol){
+            	if(tickMs == 100)
+            		HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_SET);
+            	if(tickMs >= (100+solDelay))
+            		HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_RESET);
+            	if(tickMs >= 2000)
+            		tickMs = 0;
+            }
+
+        }
 }
 
 
@@ -217,7 +236,13 @@ int main(void)
   uint8_t pidOut = 0;
 
   PID_Init(&pid1,kp,ki,kd,ts,td,umax,umin);
+
   command_Init(&command1,ktj,vmax,ts);
+
+  sequence_Init(&seq1,5);
+  float targets[5] = {150.0f,125.0f,200.0f,100.0f,0.0f};
+  uint32_t targetTimes[5] = {500,1000,1500,2000,2500};
+  addSteps(&seq1,targets,targetTimes,5);
 
 
   static GPIO_PinState lastState = GPIO_PIN_SET;
@@ -290,7 +315,8 @@ int main(void)
 		      }
 		      else if (rxBuf[0] == 'w')
 		      {
-		    	  ind = 0;
+		    	  HAL_TIM_Base_Start_IT(&htim7);
+		    	  tickMs = 0;
 		    	  runSequence = 1;
 		      }
 		      else if (rxBuf[0] == 'p' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
@@ -374,7 +400,31 @@ int main(void)
 
 	          }
 	          else if (rxBuf[0] == 'e')
-	          		      	  readEnc = !readEnc;
+
+	        	  readEnc = !readEnc;
+
+	          else if (rxBuf[0] == 'y'){
+
+
+	        	  fireSol = !fireSol;
+	          	  if (fireSol){
+	          		  tickMs = 0;
+	          		  HAL_TIM_Base_Start_IT(&htim7);
+
+	          		//HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_SET);
+	          	  }else{
+	          	  	  tickMs = 0;
+	          	  	  HAL_TIM_Base_Stop_IT(&htim7);
+	          		//HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_RESET);
+	          	  }
+	          }
+	          else if (rxBuf[0] == 'z' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
+	          	          {
+	        	  	  	  	  solDelay = (uint16_t)atoi(&rxBuf[1]);
+	          	              sprintf(msg, "Solenoid Delay (ms): %u\r\n", solDelay);
+	          		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+
+	          	          }
 	          else
                   CDC_Transmit_FS((uint8_t*)"Invalid Input\r\n", 15);
           }	  else{
@@ -395,6 +445,10 @@ int main(void)
 	  		  sprintf(msg, "enc: %ld\r\n", encoder_count);
 	  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
 	  	  }
+	  if(fireSol){
+		  sprintf(msg, "ms: %ld\r\n", tickMs);
+		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	  }
 
 
 	  HAL_Delay(100);
