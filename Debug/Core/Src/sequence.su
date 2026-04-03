@@ -1,5 +1,6 @@
 ../Core/Src/sequence.c:10:6:sequence_Init	16	static
 ../Core/Src/sequence.c:18:6:step_Init	24	static
-../Core/Src/sequence.c:24:6:addStep	24	static
-../Core/Src/sequence.c:30:6:addSteps	32	static
-../Core/Src/sequence.c:37:9:indexSeq	16	static
+../Core/Src/sequence.c:25:6:addStep	24	static
+../Core/Src/sequence.c:31:6:addSteps	40	static
+../Core/Src/sequence.c:38:9:indexSeq	16	static
+../Core/Src/sequence.c:49:17:currentStep	16	static

@@ -15,22 +15,23 @@ void sequence_Init(Sequence_t *sequence, uint16_t length){
 
 }
 
-void step_Init(SequenceStep_t *step, float mm, uint32_t ms, uint16_t hold){
+void step_Init(SequenceStep_t *step, float mm, uint32_t ms, uint16_t hold, uint16_t sol){
 	step->fire_time_ms = ms;
 	step->position_mm = mm;
 	step->hold_time_ms = hold;
+	step->solenoid = sol;
 }
 
-void addStep(Sequence_t *sequence, float mm, uint32_t ms, uint16_t hold, uint16_t ind){
+void addStep(Sequence_t *sequence, float mm, uint32_t ms, uint16_t hold, uint16_t sol, uint16_t ind){
 
-	step_Init(&(sequence->steps[ind]),mm,ms,hold);
+	step_Init(&(sequence->steps[ind]),mm,ms,hold,sol);
 
 }
 
-void addSteps(Sequence_t *sequence, float *mm, uint32_t *ms, uint16_t *hold, uint16_t len){
+void addSteps(Sequence_t *sequence, float *mm, uint32_t *ms, uint16_t *hold, uint16_t *sols, uint16_t len){
 
 	for(int i = 0; i<len; i++)
-		addStep(sequence,mm[i],ms[i],hold[i],i);
+		addStep(sequence,mm[i],ms[i],hold[i],sols[i],i);
 
 }
 
@@ -43,4 +44,8 @@ uint8_t indexSeq(Sequence_t *sequence){
 	}else
 		return 1;
 
+}
+
+SequenceStep_t* currentStep(Sequence_t *sequence){
+	return &(sequence->steps[sequence->current_step]);
 }

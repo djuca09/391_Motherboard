@@ -68,6 +68,10 @@ void Motor_Stop(void);
 void Motor_Forward(uint16_t duty);
 void Motor_Reverse(uint16_t duty);
 void Motor_Brake(void);
+void Fire_Solenoids(uint16_t sols);
+void Retract_Solenoids(uint16_t sols);
+void Sequence_Update(void);
+void Verify_At_Position(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -92,6 +96,7 @@ uint8_t posTolerance = 35;
 uint8_t atPosFlag = 0;
 uint8_t settleTimeMs = 40;
 uint32_t holdStartTime = 0;
+uint16_t testSols = 5;
 
 
 
@@ -115,42 +120,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         prev_count = encoder_count;
         actualpos += diff;
 
-        if (runSequence && atPosFlag && tickMs>=seq1.steps[seq1.current_step].fire_time_ms){
-        	if(holdStartTime == 0){
-        		holdStartTime = tickMs;
-        		HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_SET);
-        	}else if((tickMs-holdStartTime)>= seq1.steps[seq1.current_step].hold_time_ms){
-        		HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_RESET);
-        		holdStartTime = 0;
-        		if(indexSeq(&seq1)){
-            		atPosFlag = 0;
-            		atPosCounter = 0;
-                	PID_Reset(&pid1);
-                	position_Move(&command1, seq1.steps[seq1.current_step].position_mm, actualpos);
-        		}else
-        			runSequence = 0;
-        	}
-        }
+        if(runSequence && atPosFlag)
+            Sequence_Update();
 
         commandpos = update_Command_Position(&command1);
 
-        if (commandpos == command1.target_pos && abs(commandpos - actualpos) < posTolerance){
-        	if(!atPosFlag)
-        		atPosCounter += 1;
-        }else{
-        	atPosCounter = 0;
-        	atPosFlag = 0;
-        	HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_RESET); //LED for Debugging
-        }
+        Verify_At_Position();
 
-        if (atPosCounter >= settleTimeMs){
-        	if(!atPosFlag){
-        		Motor_Brake();
-        	    //PID_Reset(&pid1);
-        	    HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_SET); //LED for Debugging
-        	    atPosFlag = 1;
-        	}
-        }
         if(!atPosFlag){
             duty = PID_Update(&pid1, commandpos, actualpos);
         	if (duty > 0)
@@ -168,9 +144,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
             tickMs++;
             if(fireSol){
             	if(tickMs == 100)
-            		HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_SET);
+            		Fire_Solenoids(testSols);
             	if(tickMs >= (100+solDelay))
-            		HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_RESET);
+            		Retract_Solenoids(testSols);
             	if(tickMs >= 2000)
             		tickMs = 0;
             }
@@ -246,11 +222,12 @@ int main(void)
 
   command_Init(&command1,ktj,vmax,ts);
 
-  sequence_Init(&seq1,5);
-  float targets[5] = {150.0f,125.0f,200.0f,100.0f,50.0f};
-  uint32_t targetTimes[5] = {500,1000,1500,2000,2500};
-  uint16_t holdTimes[5] = {100,100,100,100,100};
-  addSteps(&seq1,targets,targetTimes,holdTimes,5);
+  sequence_Init(&seq1,5); //LENGTH
+  float targets[5] = {150.0f,125.0f,200.0f,100.0f,50.0f}; //Position of machine
+  uint32_t targetTimes[5] = {500,1000,1500,2000,2500}; //What time to hit note at
+  uint16_t holdTimes[5] = {100,2000,1000,100,50}; //How long to hit note for
+  uint16_t solenoids[5] = {5,3,53,5,3}; //Solenoids to fire
+  addSteps(&seq1,targets,targetTimes,holdTimes,solenoids,5);
 
 
   static GPIO_PinState lastState = GPIO_PIN_SET;
@@ -293,7 +270,7 @@ int main(void)
 		    	      PID_Reset(&pid1);
 		    	      tickMs = 0;
 		    	      HAL_TIM_Base_Start_IT(&htim7);
-		    	      position_Move(&command1, seq1.steps[seq1.current_step].position_mm, actualpos);
+		    	      position_Move(&command1, currentStep(&seq1)->position_mm, actualpos);
 		    	      atPosCounter = 0;
 		    	      atPosFlag = 0;
 		    	      runSequence = 1;
@@ -347,7 +324,7 @@ int main(void)
 		    	      PID_Reset(&pid1);
 		    	      tickMs = 0;
 		    	      HAL_TIM_Base_Start_IT(&htim7);
-		    	      position_Move(&command1, seq1.steps[seq1.current_step].position_mm, actualpos);
+		    	      position_Move(&command1, currentStep(&seq1)->position_mm, actualpos);
 		    	      atPosCounter = 0;
 		    	      atPosFlag = 0;
 		    	      runSequence = 1;
@@ -399,7 +376,11 @@ int main(void)
 	              sprintf(msg, "Position Tolerance (encoder counts): %u\r\n", posTolerance);
 		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
 
-	          }
+	          }else if (rxBuf[0] == 'q')
+  		      {
+  		  		  sprintf(msg, "Settle Time: %u Pos Tolerance: %u\r\n", settleTimeMs ,posTolerance);
+  		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+  		      }
 		      else{
 				  sprintf(msg, "Input %s not recognized\r\n", rxBuf);
 				  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
@@ -442,6 +423,11 @@ int main(void)
 
 	          else if (rxBuf[0] == 'y'){
 
+	        	  if(rxBuf[1] >= '0' && rxBuf[1] <= '9'){
+		        	  testSols = (uint16_t)atoi(&rxBuf[1]);
+		          	  sprintf(msg, "Solenoids Firing: %u\r\n", testSols);
+		          	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	        	  }
 
 	        	  fireSol = !fireSol;
 	          	  if (fireSol){
@@ -450,16 +436,16 @@ int main(void)
 	          	  }else{
 	          	  	  tickMs = 0;
 	          	  	  HAL_TIM_Base_Stop_IT(&htim7);
-	          		  HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_RESET);
+	          	  	Retract_Solenoids(testSols);
 	          	  }
 	          }
 	          else if (rxBuf[0] == 'z' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
-	          	          {
-	        	  	  	  	  solDelay = (uint16_t)atoi(&rxBuf[1]);
-	          	              sprintf(msg, "Solenoid Delay (ms): %u\r\n", solDelay);
-	          		  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	          {
+	        	  solDelay = (uint16_t)atoi(&rxBuf[1]);
+	          	  sprintf(msg, "Solenoid Delay (ms): %u\r\n", solDelay);
+	          	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
 
-	          	          }
+	          }
 	          else
                   CDC_Transmit_FS((uint8_t*)"Invalid Input\r\n", 15);
           }	  else{
@@ -832,6 +818,68 @@ void Motor_Brake(void)
     // Disable both low-side PWMs
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 999);     // M5
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 999);     // M6
+}
+
+void Fire_Solenoids(uint16_t sols){
+    // Map solenoid number to pin
+    uint32_t pins[6] = {0, SLN_DRV_1_Pin, SLN_DRV_2_Pin, SLN_DRV_3_Pin, SLN_DRV_4_Pin, SLN_DRV_5_Pin};
+    GPIO_TypeDef* ports[6] = {0, GPIOB, GPIOB, GPIOB, GPIOC, GPIOC};
+
+    while (sols > 0)
+    {
+        uint8_t sol = sols % 10;       // extract last digit
+        if (sol >= 1 && sol <= 5)
+            HAL_GPIO_WritePin(ports[sol], pins[sol], GPIO_PIN_SET);
+        sols /= 10;
+    }
+}
+
+void Retract_Solenoids(uint16_t sols){
+    // Map solenoid number to pin
+    uint32_t pins[6] = {0, SLN_DRV_1_Pin, SLN_DRV_2_Pin, SLN_DRV_3_Pin, SLN_DRV_4_Pin, SLN_DRV_5_Pin};
+    GPIO_TypeDef* ports[6] = {0, GPIOB, GPIOB, GPIOB, GPIOC, GPIOC};
+
+    while (sols > 0)
+    {
+        uint8_t sol = sols % 10;       // extract last digit
+        if (sol >= 1 && sol <= 5)
+            HAL_GPIO_WritePin(ports[sol], pins[sol], GPIO_PIN_RESET);
+        sols /= 10;
+    }
+}
+
+void Sequence_Update(void){
+    if(holdStartTime == 0 && tickMs >= currentStep(&seq1)->fire_time_ms){
+        holdStartTime = tickMs;
+        Fire_Solenoids(currentStep(&seq1)->solenoid);
+    }else if(holdStartTime != 0 && (tickMs-holdStartTime) >= currentStep(&seq1)->hold_time_ms){
+        Retract_Solenoids(currentStep(&seq1)->solenoid);
+        holdStartTime = 0;
+        if(indexSeq(&seq1)){
+            atPosFlag = 0;
+            atPosCounter = 0;
+            PID_Reset(&pid1);
+            position_Move(&command1, currentStep(&seq1)->position_mm, actualpos);
+        }else
+            runSequence = 0;
+    }
+}
+
+void Verify_At_Position(void){
+    if (commandpos == command1.target_pos && abs(commandpos - actualpos) < posTolerance){
+        if(!atPosFlag)
+            atPosCounter += 1;
+    }else{
+        atPosCounter = 0;
+        atPosFlag = 0;
+        HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_RESET);
+    }
+
+    if (atPosCounter >= settleTimeMs && !atPosFlag){
+        Motor_Brake();
+        HAL_GPIO_WritePin(GPIOB, LED_Pin, GPIO_PIN_SET);
+        atPosFlag = 1;
+    }
 }
 /* USER CODE END 4 */
 
