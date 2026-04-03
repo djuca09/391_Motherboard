@@ -91,6 +91,7 @@ volatile uint16_t solDelay = 500;
 uint8_t posTolerance = 35;
 uint8_t atPosFlag = 0;
 uint8_t settleTimeMs = 40;
+uint32_t holdStartTime = 0;
 
 
 
@@ -114,16 +115,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         prev_count = encoder_count;
         actualpos += diff;
 
-        if (runSequence && atPosFlag){
-            atPosFlag = 0;
-            atPosCounter = 0;
-        	PID_Reset(&pid1);
-//        	position_Move(&command1, targets[ind], actualpos);
-//        	ind++;
-//        	if(ind == 5){
-//        		ind = 0;
-//        		runSequence = 0;
-//        	}
+        if (runSequence && atPosFlag && tickMs>=seq1.steps[seq1.current_step].fire_time_ms){
+        	if(holdStartTime == 0){
+        		holdStartTime = tickMs;
+        		HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_SET);
+        	}else if((tickMs-holdStartTime)>= seq1.steps[seq1.current_step].hold_time_ms){
+        		HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_RESET);
+        		holdStartTime = 0;
+        		if(indexSeq(&seq1)){
+            		atPosFlag = 0;
+            		atPosCounter = 0;
+                	PID_Reset(&pid1);
+                	position_Move(&command1, seq1.steps[seq1.current_step].position_mm, actualpos);
+        		}else
+        			runSequence = 0;
+        	}
         }
 
         commandpos = update_Command_Position(&command1);
@@ -230,24 +236,29 @@ int main(void)
 
   uint8_t runPID = 0;
   float target = 0;
-  uint16_t jogSpeed = 300;
+  uint16_t jogSpeed = 150;
   uint8_t jogMode = 0;
   uint8_t readEnc = 0;
   uint8_t pidOut = 0;
+  uint8_t demoMode = 0;
 
   PID_Init(&pid1,kp,ki,kd,ts,td,umax,umin);
 
   command_Init(&command1,ktj,vmax,ts);
 
   sequence_Init(&seq1,5);
-  float targets[5] = {150.0f,125.0f,200.0f,100.0f,0.0f};
+  float targets[5] = {150.0f,125.0f,200.0f,100.0f,50.0f};
   uint32_t targetTimes[5] = {500,1000,1500,2000,2500};
-  addSteps(&seq1,targets,targetTimes,5);
+  uint16_t holdTimes[5] = {100,100,100,100,100};
+  addSteps(&seq1,targets,targetTimes,holdTimes,5);
 
 
   static GPIO_PinState lastState = GPIO_PIN_SET;
 
   char msg[64];
+
+  if(demoMode)
+	  Motor_Reverse(jogSpeed);
 
   /* USER CODE END 2 */
 
@@ -264,23 +275,40 @@ int main(void)
 	  {
 	      if (!runPID) {
 	          // Home and enable interrupt
-	    	  Motor_Stop(); //Psuedo Safety Stop
+	    	  Motor_Brake(); //Psuedo Safety Stop
 	          actualpos = 0;
 	          PID_Reset(&pid1);
 	          command_Reset(&command1);
 	          prev_count = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
 	          runPID = 1;
 	          jogMode = 0;
+	          fireSol = 0;
 		  	  strcpy(msg, "PID Mode On\r\n");
 		  	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
 	          HAL_TIM_Base_Start_IT(&htim6);
+	          position_Move(&command1, 100, actualpos);
 	      } else {
-	          // Stop interrupt and motor
-	          HAL_TIM_Base_Stop_IT(&htim6);
-	          Motor_Stop();
-	          runPID = 0;
-		  	  strcpy(msg, "PID Mode Off\r\n");
-		  	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	    	  if(demoMode){
+		    	  if(atPosFlag){
+		    	      PID_Reset(&pid1);
+		    	      tickMs = 0;
+		    	      HAL_TIM_Base_Start_IT(&htim7);
+		    	      position_Move(&command1, seq1.steps[seq1.current_step].position_mm, actualpos);
+		    	      atPosCounter = 0;
+		    	      atPosFlag = 0;
+		    	      runSequence = 1;
+		    	  }else{
+			  		  sprintf(msg, "Not Homed/At Position\r\n");
+			  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+		    	  }
+	    	  }else{
+		          // Stop interrupt and motor
+		          HAL_TIM_Base_Stop_IT(&htim6);
+		          Motor_Brake();
+		          runPID = 0;
+			  	  strcpy(msg, "PID Mode Off\r\n");
+			  	  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	    	  }
 	      }
 	  }
 
@@ -315,9 +343,18 @@ int main(void)
 		      }
 		      else if (rxBuf[0] == 'w')
 		      {
-		    	  HAL_TIM_Base_Start_IT(&htim7);
-		    	  tickMs = 0;
-		    	  runSequence = 1;
+		    	  if(atPosFlag){
+		    	      PID_Reset(&pid1);
+		    	      tickMs = 0;
+		    	      HAL_TIM_Base_Start_IT(&htim7);
+		    	      position_Move(&command1, seq1.steps[seq1.current_step].position_mm, actualpos);
+		    	      atPosCounter = 0;
+		    	      atPosFlag = 0;
+		    	      runSequence = 1;
+		    	  }else{
+			  		  sprintf(msg, "Not Homed/At Position\r\n");
+			  		  CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+		    	  }
 		      }
 		      else if (rxBuf[0] == 'p' && rxBuf[1] >= '0' && rxBuf[1] <= '9')
 		      {
@@ -410,12 +447,10 @@ int main(void)
 	          	  if (fireSol){
 	          		  tickMs = 0;
 	          		  HAL_TIM_Base_Start_IT(&htim7);
-
-	          		//HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_SET);
 	          	  }else{
 	          	  	  tickMs = 0;
 	          	  	  HAL_TIM_Base_Stop_IT(&htim7);
-	          		//HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_RESET);
+	          		  HAL_GPIO_WritePin(GPIOC, SLN_DRV_5_Pin, GPIO_PIN_RESET);
 	          	  }
 	          }
 	          else if (rxBuf[0] == 'z' && rxBuf[1] >= '0' && rxBuf[1] <= '9')

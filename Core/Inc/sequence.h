@@ -13,6 +13,7 @@
 typedef struct {
     float position_mm;
     uint32_t fire_time_ms;
+    uint16_t hold_time_ms;
 } SequenceStep_t;
 
 typedef struct {
@@ -23,11 +24,11 @@ typedef struct {
 
 void sequence_Init(Sequence_t *sequence, uint16_t length);
 
-void step_Init(SequenceStep_t *step, float mm, uint32_t ms);
+void step_Init(SequenceStep_t *step, float mm, uint32_t ms, uint16_t hold);
 
-void addStep(Sequence_t *sequence, float mm, uint32_t ms, uint16_t ind);
+void addStep(Sequence_t *sequence, float mm, uint32_t ms, uint16_t hold, uint16_t ind);
 
-void addSteps(Sequence_t *sequence, float *mm, uint32_t *ms, uint16_t len);
+void addSteps(Sequence_t *sequence, float *mm, uint32_t *ms, uint16_t *hold, uint16_t len);
 
 uint8_t indexSeq(Sequence_t *sequence);
 

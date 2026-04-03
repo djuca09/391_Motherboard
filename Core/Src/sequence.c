@@ -15,21 +15,22 @@ void sequence_Init(Sequence_t *sequence, uint16_t length){
 
 }
 
-void step_Init(SequenceStep_t *step, float mm, uint32_t ms){
+void step_Init(SequenceStep_t *step, float mm, uint32_t ms, uint16_t hold){
 	step->fire_time_ms = ms;
 	step->position_mm = mm;
+	step->hold_time_ms = hold;
 }
 
-void addStep(Sequence_t *sequence, float mm, uint32_t ms, uint16_t ind){
+void addStep(Sequence_t *sequence, float mm, uint32_t ms, uint16_t hold, uint16_t ind){
 
-	step_Init(&(sequence->steps[ind]),mm,ms);
+	step_Init(&(sequence->steps[ind]),mm,ms,hold);
 
 }
 
-void addSteps(Sequence_t *sequence, float *mm, uint32_t *ms, uint16_t len){
+void addSteps(Sequence_t *sequence, float *mm, uint32_t *ms, uint16_t *hold, uint16_t len){
 
 	for(int i = 0; i<len; i++)
-		addStep(sequence,mm[i],ms[i],i);
+		addStep(sequence,mm[i],ms[i],hold[i],i);
 
 }
 
@@ -38,8 +39,8 @@ uint8_t indexSeq(Sequence_t *sequence){
 	sequence->current_step += 1;
 	if(sequence->current_step == sequence->length){
 		sequence->current_step = 0;
-		return 1;
-	}else
 		return 0;
+	}else
+		return 1;
 
 }
